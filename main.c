@@ -1,7 +1,8 @@
 #include "lyrics.h"
-// main.c — tiny HTTP router
-// "/" returns content form lyrics.h
+// main.c — tiny HTTP router with line-by-line stdout printing
+// "/" returns content from lyrics.h
 // "/health" => 200, others => 404
+// Prints content line-by-line to stdout every 2 seconds
 
 typedef long i64; typedef unsigned short u16; typedef unsigned int u32;
 
@@ -20,6 +21,7 @@ static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
 #  define SYS_read 0
 #  define SYS_write 1
 #  define SYS_close 3
+#  define SYS_poll 7
 #  define SYS_socket 41
 #  define SYS_bind 49
 #  define SYS_listen 50
@@ -43,6 +45,7 @@ static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
 #  define SYS_close 57
 #  define SYS_read 63
 #  define SYS_write 64
+#  define SYS_ppoll 73
 #  define SYS_socket 198
 #  define SYS_bind 200
 #  define SYS_listen 201
@@ -57,6 +60,18 @@ static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
 #define SOCK_STREAM 1
 #define SOL_SOCKET 1
 #define SO_REUSEADDR 2
+#define POLLIN 0x001
+
+struct pollfd {
+  int fd;
+  short events;
+  short revents;
+};
+
+struct timespec {
+  i64 tv_sec;
+  i64 tv_nsec;
+};
 
 struct in_addr{ u32 s_addr; };
 struct sockaddr_in{
@@ -104,6 +119,18 @@ static void* memcpy_manual(void* dst, const void* src, int n){
   return dst;
 }
 
+// Find next line in content
+static int find_next_line(const char* str, int start, int total_len, int* line_start, int* line_len){
+  if(start >= total_len) return 0; // No more lines
+
+  *line_start = start;
+  int i = start;
+  while(i < total_len && str[i] != '\n') i++;
+
+  *line_len = i - start;
+  return 1; // Found a line
+}
+
 void _start(void){
   int s=(int)sys(SYS_socket,AF_INET,SOCK_STREAM,0,0,0,0);
   int one=1; sys(SYS_setsockopt,s,SOL_SOCKET,SO_REUSEADDR,(i64)&one,sizeof(one),0);
@@ -148,26 +175,77 @@ void _start(void){
   memcpy_manual(resp_main + pos, content, content_len);
   pos += content_len;
 
+  // Line printing state
+  int current_pos = 0;
+  int elapsed_ms = 0;
+  const int interval_ms = 2000; // 2 seconds
+  const int poll_timeout_ms = 100; // Check every 100ms
+
+  // Poll structure for the listening socket
+  struct pollfd pfd;
+  pfd.fd = s;
+  pfd.events = POLLIN;
+
   for(;;){
-    int c=(int)sys(SYS_accept,s,0,0,0,0,0); if(c<0) break;
+    // Poll with timeout (non-blocking)
+    struct timespec ts;
+    ts.tv_sec = poll_timeout_ms / 1000;
+    ts.tv_nsec = (poll_timeout_ms % 1000) * 1000000;
 
-    char buf[512];
-    int n=(int)sys(SYS_read,c,(i64)buf,(i64)sizeof(buf),0,0,0);
-    int which = (n>0) ? path_case(buf,n) : 2;
+#if defined(__x86_64__)
+    int ready = (int)sys(SYS_poll, (i64)&pfd, 1, poll_timeout_ms, 0, 0, 0);
+#elif defined(__aarch64__)
+    int ready = (int)sys(SYS_ppoll, (i64)&pfd, 1, (i64)&ts, 0, 0, 0);
+#endif
 
-    if(which==0){
-      // Main page with content
-      sys(SYS_write,c,(i64)resp_main,(i64)pos,0,0,0);
-    }else if(which==1){
-      // Health check
-      sys(SYS_write,c,(i64)resp_health,(i64)(sizeof(resp_health)-1),0,0,0);
-    }else{
-      // 404
-      sys(SYS_write,c,(i64)resp_404,(i64)(sizeof(resp_404)-1),0,0,0);
+    // Handle HTTP connections if available
+    if(ready > 0 && (pfd.revents & POLLIN)){
+      int c=(int)sys(SYS_accept,s,0,0,0,0,0);
+      if(c >= 0){
+        char buf[512];
+        int n=(int)sys(SYS_read,c,(i64)buf,(i64)sizeof(buf),0,0,0);
+        int which = (n>0) ? path_case(buf,n) : 2;
+
+        if(which==0){
+          // Main page with content
+          sys(SYS_write,c,(i64)resp_main,(i64)pos,0,0,0);
+        }else if(which==1){
+          // Health check
+          sys(SYS_write,c,(i64)resp_health,(i64)(sizeof(resp_health)-1),0,0,0);
+        }else{
+          // 404
+          sys(SYS_write,c,(i64)resp_404,(i64)(sizeof(resp_404)-1),0,0,0);
+        }
+
+        sys(SYS_close,c,0,0,0,0,0);
+      }
     }
 
-    sys(SYS_close,c,0,0,0,0,0);
+    // Update elapsed time
+    elapsed_ms += poll_timeout_ms;
+
+    // Print line every 2 seconds
+    if(elapsed_ms >= interval_ms){
+      elapsed_ms = 0;
+
+      int line_start, line_len;
+      if(find_next_line(content, current_pos, content_len, &line_start, &line_len)){
+        // Write line to stdout (fd=1)
+        sys(SYS_write, 1, (i64)(content + line_start), line_len, 0, 0, 0);
+        sys(SYS_write, 1, (i64)"\n", 1, 0, 0, 0);
+
+        // Move to next line
+        current_pos = line_start + line_len;
+        if(current_pos < content_len && content[current_pos] == '\n'){
+          current_pos++; // Skip the newline character
+        }
+      } else {
+        // Reached end, start over
+        current_pos = 0;
+      }
+    }
   }
+
   sys(SYS_close,s,0,0,0,0,0);
   sys(SYS_exit,0,0,0,0,0,0);
 }
