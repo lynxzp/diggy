@@ -1,4 +1,4 @@
-// main.c — tiny HTTP "OK" on :8080, x86_64 + aarch64
+// main.c — tiny HTTP router: "/" and "/health" => 200, others => 404
 typedef long i64; typedef unsigned short u16; typedef unsigned int u32;
 
 #if defined(__x86_64__)
@@ -13,13 +13,14 @@ static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
     : "rcx","r11","memory");
   return rax;
 }
+#  define SYS_read 0
+#  define SYS_write 1
+#  define SYS_close 3
 #  define SYS_socket 41
-#  define SYS_setsockopt 54
 #  define SYS_bind 49
 #  define SYS_listen 50
 #  define SYS_accept 43
-#  define SYS_write 1
-#  define SYS_close 3
+#  define SYS_setsockopt 54
 #  define SYS_exit 60
 #elif defined(__aarch64__)
 static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
@@ -35,13 +36,14 @@ static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
                    : "memory");
   return x0;
 }
+#  define SYS_close 57
+#  define SYS_read 63
+#  define SYS_write 64
 #  define SYS_socket 198
-#  define SYS_setsockopt 208
 #  define SYS_bind 200
 #  define SYS_listen 201
 #  define SYS_accept 202
-#  define SYS_write 64
-#  define SYS_close 57
+#  define SYS_setsockopt 208
 #  define SYS_exit 93
 #else
 #  error "Unsupported arch"
@@ -58,6 +60,25 @@ struct sockaddr_in{
 };
 static u16 htons(u16 x){ return (u16)((x<<8)|(x>>8)); }
 
+static int path_case(const char *buf, int n){
+  // returns: 0="/", 1="/health", 2=other/unknown
+  int i=0;
+  // skip method token
+  while(i<n && buf[i]!=' ') i++;
+  while(i<n && buf[i]==' ') i++;
+  if(i>=n || buf[i]!='/') return 2;
+  int start=i;
+  while(i<n && buf[i]!=' ') i++;
+  int len=i-start;
+  if(len==1) return 0; // "/"
+  if(len==7){
+    const char h[]="/health";
+    for(int k=0;k<7;k++) if(start+k>=n || buf[start+k]!=h[k]) return 2;
+    return 1;
+  }
+  return 2;
+}
+
 void _start(void){
   int s=(int)sys(SYS_socket,AF_INET,SOCK_STREAM,0,0,0,0);
   int one=1; sys(SYS_setsockopt,s,SOL_SOCKET,SO_REUSEADDR,(i64)&one,sizeof(one),0);
@@ -67,10 +88,33 @@ void _start(void){
   sys(SYS_bind,s,(i64)&a,sizeof(a),0,0,0);
   sys(SYS_listen,s,128,0,0,0,0);
 
-  static const char resp[]="HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nOK";
+  static const char resp_ok[] =
+    "HTTP/1.1 200 OK\r\n"
+    "Content-Length: 2\r\n"
+    "Connection: close\r\n"
+    "Content-Type: text/plain\r\n"
+    "\r\nOK";
+
+  static const char resp_404[] =
+    "HTTP/1.1 404 Not Found\r\n"
+    "Content-Length: 9\r\n"
+    "Connection: close\r\n"
+    "Content-Type: text/plain\r\n"
+    "\r\nNot Found";
+
   for(;;){
     int c=(int)sys(SYS_accept,s,0,0,0,0,0); if(c<0) break;
-    sys(SYS_write,c,(i64)resp,(i64)sizeof(resp)-1,0,0,0);
+
+    char buf[512];
+    int n=(int)sys(SYS_read,c,(i64)buf,(i64)sizeof(buf),0,0,0);
+    int which = (n>0) ? path_case(buf,n) : 2;
+
+    if(which==0 || which==1){
+      sys(SYS_write,c,(i64)resp_ok,(i64)(sizeof(resp_ok)-1),0,0,0);
+    }else{
+      sys(SYS_write,c,(i64)resp_404,(i64)(sizeof(resp_404)-1),0,0,0);
+    }
+
     sys(SYS_close,c,0,0,0,0,0);
   }
   sys(SYS_close,s,0,0,0,0,0);

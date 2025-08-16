@@ -5,7 +5,8 @@ COPY main.c .
 RUN cc -Os -s -static -nostdlib -fno-stack-protector -fno-asynchronous-unwind-tables \
        -fomit-frame-pointer -fno-pic -no-pie -ffunction-sections -fdata-sections \
        -Wl,--gc-sections -Wl,--build-id=none -Wl,-e,_start \
-       -o app main.c
+       -o app main.c && \
+    strip --strip-all -R .comment -R .note.* -R .gnu* app
 
 FROM scratch
 COPY --from=build /src/app /app
