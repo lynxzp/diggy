@@ -1,11 +1,12 @@
-# Build tiny static binary on musl
 FROM alpine:3.22 AS build
-RUN apk add --no-cache musl-dev build-base upx
+RUN apk add --no-cache build-base upx
 WORKDIR /src
 COPY main.c .
-RUN cc -Os -s -static -fdata-sections -ffunction-sections -Wl,--gc-sections -o app main.c && upx --best --lzma app
+RUN cc -Os -s -static -nostdlib -fno-stack-protector -fno-asynchronous-unwind-tables \
+       -fomit-frame-pointer -fno-pic -no-pie -ffunction-sections -fdata-sections \
+       -Wl,--gc-sections -Wl,--build-id=none -Wl,-e,_start \
+       -o app main.c
 
-# Final image: just the binary
 FROM scratch
 COPY --from=build /src/app /app
 EXPOSE 8080

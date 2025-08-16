@@ -1,186 +1,78 @@
-// build: cc -Os -s -static -fdata-sections -ffunction-sections -Wl,--gc-sections -o app server.c
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <signal.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/time.h>
-#include <time.h>
-#include <unistd.h>
+// main.c — tiny HTTP "OK" on :8080, x86_64 + aarch64
+typedef long i64; typedef unsigned short u16; typedef unsigned int u32;
 
-#define PORT 8080
-#define RECV_BUF 8192
-
-static const char *lyrics =
-"Brothers of the mine rejoice!\n"
-"(Swing, swing, swing with me!)\n"
-"Raise your pick and raise your voice!\n"
-"(Sing, sing, sing with me!)\n"
-"\n"
-"Down and down into the deep\n"
-"Who knows what we'll find beneath?\n"
-"Diamonds, rubies, gold, and more\n"
-"Hidden in the mountain store\n"
-"\n"
-"Born underground\n"
-"Suckled from a teat of stone\n"
-"Raised in the dark\n"
-"The safety of our mountain home\n"
-"\n"
-"Skin made of iron\n"
-"Steel in our bones\n"
-"To dig and dig makes us free\n"
-"Come on, brothers, sing with me!\n"
-"\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, diggy diggy hole\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, digging a hole\n"
-"\n"
-"The sunlight will not reach this low\n"
-"(Deep, deep in the mine)\n"
-"Never seen the blue moon glow\n"
-"(Dwarves won't fly so high)\n"
-"\n"
-"Fill a glass and down some mead\n"
-"Stuff your bellies at the feast!\n"
-"Stumble home and fall asleep\n"
-"Dreaming in our mountain keep\n"
-"\n"
-"Born underground\n"
-"Grown inside a rocky womb\n"
-"The Earth is our cradle\n"
-"The mountain shall become our tomb\n"
-"\n"
-"Face us on the battlefield\n"
-"You will meet your doom\n"
-"We do not fear what lies beneath\n"
-"We can never dig too deep\n"
-"\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, diggy diggy hole\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, digging a hole\n"
-"\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, diggy diggy hole\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, digging a hole\n"
-"\n"
-"Born underground\n"
-"Suckled from a teat of stone\n"
-"Raised in the dark\n"
-"The safety of our mountain home\n"
-"\n"
-"Skin made of iron\n"
-"Steel in our bones\n"
-"To dig and dig makes us free\n"
-"Come on, brothers, sing with me!\n"
-"\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, diggy diggy hole\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, digging a hole\n"
-"\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, diggy diggy hole\n"
-"I am a dwarf and I'm digging a hole\n"
-"Diggy diggy hole, digging a hole\n";
-
-static void print_next_line_every_3s(const char *text, size_t len, time_t *next_tick, size_t *pos) {
-    time_t now = time(NULL);
-    if (now < *next_tick) return;
-
-    // find next newline
-    size_t start = *pos;
-    if (start >= len) { start = 0; } // loop
-    size_t i = start;
-    while (i < len && text[i] != '\n') i++;
-
-    // print [start, i) and a newline
-    if (i > start) (void)write(STDOUT_FILENO, text + start, i - start);
-    (void)write(STDOUT_FILENO, "\n", 1);
-
-    *pos = (i < len) ? (i + 1) : 0;
-    *next_tick = now + 2;
+#if defined(__x86_64__)
+static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
+  register i64 r10 __asm__("r10") = d;
+  register i64 r8  __asm__("r8")  = e;
+  register i64 r9  __asm__("r9")  = f;
+  i64 rax;
+  __asm__ volatile("syscall"
+    : "=a"(rax)
+    : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
+    : "rcx","r11","memory");
+  return rax;
 }
+#  define SYS_socket 41
+#  define SYS_setsockopt 54
+#  define SYS_bind 49
+#  define SYS_listen 50
+#  define SYS_accept 43
+#  define SYS_write 1
+#  define SYS_close 3
+#  define SYS_exit 60
+#elif defined(__aarch64__)
+static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
+  register i64 x8 __asm__("x8") = n;
+  register i64 x0 __asm__("x0") = a;
+  register i64 x1 __asm__("x1") = b;
+  register i64 x2 __asm__("x2") = c;
+  register i64 x3 __asm__("x3") = d;
+  register i64 x4 __asm__("x4") = e;
+  register i64 x5 __asm__("x5") = f;
+  __asm__ volatile("svc 0" : "+r"(x0)
+                   : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+                   : "memory");
+  return x0;
+}
+#  define SYS_socket 198
+#  define SYS_setsockopt 208
+#  define SYS_bind 200
+#  define SYS_listen 201
+#  define SYS_accept 202
+#  define SYS_write 64
+#  define SYS_close 57
+#  define SYS_exit 93
+#else
+#  error "Unsupported arch"
+#endif
 
-int main(void) {
-    signal(SIGPIPE, SIG_IGN); // avoid crash on client aborts
+#define AF_INET 2
+#define SOCK_STREAM 1
+#define SOL_SOCKET 1
+#define SO_REUSEADDR 2
 
-    int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return 1;
-    int one = 1;
-    setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+struct in_addr{ u32 s_addr; };
+struct sockaddr_in{
+  u16 sin_family; u16 sin_port; struct in_addr sin_addr; unsigned char sin_zero[8];
+};
+static u16 htons(u16 x){ return (u16)((x<<8)|(x>>8)); }
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(PORT);
-    if (bind(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) return 1;
-    if (listen(s, 128) < 0) return 1;
+void _start(void){
+  int s=(int)sys(SYS_socket,AF_INET,SOCK_STREAM,0,0,0,0);
+  int one=1; sys(SYS_setsockopt,s,SOL_SOCKET,SO_REUSEADDR,(i64)&one,sizeof(one),0);
 
-    time_t next_tick = time(NULL); // start printing immediately
-    size_t pos = 0;
-    size_t lyrics_len = strlen(lyrics);
+  struct sockaddr_in a = {0};
+  a.sin_family=AF_INET; a.sin_port=htons(8080); a.sin_addr.s_addr=0;
+  sys(SYS_bind,s,(i64)&a,sizeof(a),0,0,0);
+  sys(SYS_listen,s,128,0,0,0,0);
 
-    for (;;) {
-        // multiplex: wait up to 200ms for a client, also tick every 3s
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(s, &rfds);
-        struct timeval tv = {0, 200000}; // 200ms
-        int r = select(s + 1, &rfds, NULL, NULL, &tv);
-        if (r < 0 && errno != EINTR) {
-            // even on error, still keep ticking prints
-        }
-        // periodic terminal print (no threads)
-        print_next_line_every_3s(lyrics, lyrics_len, &next_tick, &pos);
-
-        if (r > 0 && FD_ISSET(s, &rfds)) {
-            int c = accept(s, NULL, NULL);
-            if (c < 0) continue;
-
-            char buf[RECV_BUF];
-            int n = read(c, buf, sizeof(buf) - 1);
-            if (n > 0) {
-                buf[n] = 0;
-
-                // ultra-naive parse: METHOD PATH from request line
-                char method[8] = {0}, path[1024] = {0};
-                sscanf(buf, "%7s %1023s", method, path);
-
-                const char *status = "200 OK";
-                const char *body   = lyrics;
-
-                if (strcmp(path, "/") == 0) {
-                    body = lyrics;
-                } else if (strcmp(path, "/health") == 0) {
-                    body = "ok\n";
-                } else {
-                    status = "404 Not Found";
-                    body   = "not found\n";
-                }
-
-                char hdr[256];
-                int blen = (int)strlen(body);
-                int hlen = snprintf(hdr, sizeof(hdr),
-                                    "HTTP/1.1 %s\r\n"
-                                    "Content-Type: text/plain; charset=utf-8\r\n"
-                                    "Content-Length: %d\r\n"
-                                    "Connection: close\r\n"
-                                    "\r\n", status, blen);
-                if (hlen > 0) {
-                    (void)write(c, hdr, (size_t)hlen);
-                    (void)write(c, body, (size_t)blen);
-                }
-            }
-            close(c);
-        }
-    }
+  static const char resp[]="HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\nContent-Type: text/plain\r\n\r\nOK";
+  for(;;){
+    int c=(int)sys(SYS_accept,s,0,0,0,0,0); if(c<0) break;
+    sys(SYS_write,c,(i64)resp,(i64)sizeof(resp)-1,0,0,0);
+    sys(SYS_close,c,0,0,0,0,0);
+  }
+  sys(SYS_close,s,0,0,0,0,0);
+  sys(SYS_exit,0,0,0,0,0,0);
 }
