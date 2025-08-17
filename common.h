@@ -24,3 +24,22 @@ static void* memcpy_manual(char* dst, const char* src, int n){
     }
     return dst;
 }
+
+// ============================================================================
+// Utility function to calculate string length
+// ============================================================================
+static int str_len(const char* str){
+    volatile int len = 0; // Use volatile to prevent optimization and use strlen from stdlib, which not available
+    while(str[len]) len++;
+    return len;
+}
+
+// Compare two strings
+static int compare_strings(const char* s1, const char* s2, int len){
+    int i;
+    for(i = 0; i < len; i++){
+        if(s1[i] != s2[i]) return 0;
+    }
+    return 1;
+}
+

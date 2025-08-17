@@ -207,14 +207,6 @@ static const char health_content[] = "OK";
 static const char about_content[] = "This is a simple HTTP server";
 static const char info_content[] = "Server v1.0.0\nMinimal HTTP implementation";
 
-// ============================================================================
-// Utility function to calculate string length
-// ============================================================================
-static int string_len(const char* str){
-  volatile int len = 0; // Use volatile to prevent optimization and use strlen from stdlib, which not available
-  while(str[len]) len++;
-  return len;
-}
 
 // ============================================================================
 // ROUTE TABLE - Add new routes here!
@@ -235,9 +227,19 @@ static Route routes[] = {
 static void init_routes(void){
   int i;
   for(i = 0; i < NUM_ROUTES; i++){
-    routes[i].path_len = string_len(routes[i].path);
-    routes[i].content_type_len = string_len(routes[i].content_type);
+    routes[i].path_len = str_len(routes[i].path);
+    routes[i].content_type_len = str_len(routes[i].content_type);
   }
+}
+static const Route* find_route(const char* path, int path_len){
+  int i;
+  for(i = 0; i < NUM_ROUTES; i++){
+    if(routes[i].path_len == path_len &&
+       compare_strings(routes[i].path, path, path_len)){
+      return &routes[i];
+       }
+  }
+  return 0;  // Not found
 }
 
 // Build HTTP response for a route
@@ -318,26 +320,6 @@ static int extract_path(const char* req, int req_len, const char** path_start, i
   return 1;
 }
 
-// Compare two strings
-static int compare_strings(const char* s1, const char* s2, int len){
-  int i;
-  for(i = 0; i < len; i++){
-    if(s1[i] != s2[i]) return 0;
-  }
-  return 1;
-}
-
-// Find matching route
-static const Route* find_route(const char* path, int path_len){
-  int i;
-  for(i = 0; i < NUM_ROUTES; i++){
-    if(routes[i].path_len == path_len &&
-       compare_strings(routes[i].path, path, path_len)){
-      return &routes[i];
-    }
-  }
-  return 0;  // Not found
-}
 
 // Handle HTTP request
 static void handle_request(int client_fd){
@@ -421,11 +403,90 @@ static void print_next_line(int* current_pos){
 }
 
 // ============================================================================
+// Environment overrides: read /proc/self/environ and apply DIGGY_* vars
+// ============================================================================
+static void parse_env_var(const char* kv, int len) {
+  static int header_printed = 0;
+  int eq_pos = -1;
+  int i;
+  for(i = 0; i < len; i++){
+    if(kv[i] == '='){ eq_pos = i; break; }
+  }
+  if(eq_pos <= 0) return;
+  if(eq_pos < 6) return; // need at least "DIGGY_"
+  if(!compare_strings(kv, "DIGGY_", 6)) return;
+
+  const char* key = kv + 6;
+  int key_len = eq_pos - 6;
+  const char* value = kv + eq_pos + 1;
+  int value_len = len - eq_pos - 1;
+
+  int applied = 0;
+  if(key_len == 4 && str_equals(key, "PORT", 4)){
+    config.port = str_to_int(value, value_len);
+    applied = 1;
+  } else if(key_len == 4 && str_equals(key, "HOST", 4)){
+    u32 h = parse_ip(value, value_len);
+    if(h) {
+      config.host = h;
+      applied = 1;
+    }
+  } else if(key_len == 11 && str_equals(key, "INTERVAL_MS", 11)){
+    config.interval_ms = str_to_int(value, value_len);
+    applied = 1;
+  } else if(key_len == 15 && str_equals(key, "POLL_TIMEOUT_MS", 15)){
+    config.poll_timeout_ms = str_to_int(value, value_len);
+    applied = 1;
+  } else if(key_len == 4 && str_equals(key, "MINE", 4)){
+    config.mine = str_to_int(value, value_len);
+    applied = 1;
+  }
+
+  // Print loaded env var in "KEY=VALUE" form once applied
+  if(applied){
+    if(!header_printed){
+      static const char hdr[] = "Env overrides loaded:\n";
+      sys(SYS_write, 1, (i64)hdr, sizeof(hdr) - 1, 0, 0, 0);
+      header_printed = 1;
+    }
+    sys(SYS_write, 1, (i64)"  ", 2, 0, 0, 0);
+    sys(SYS_write, 1, (i64)kv, len, 0, 0, 0);
+    sys(SYS_write, 1, (i64)"\n", 1, 0, 0, 0);
+  }
+}
+
+static void load_env_overrides(void){
+  char buffer[4096];
+  int fd, bytes_read;
+#if defined(__x86_64__)
+  fd = (int)sys(SYS_open, (i64)"/proc/self/environ", O_RDONLY, 0, 0, 0, 0);
+#elif defined(__aarch64__)
+  fd = (int)sys(SYS_openat, AT_FDCWD, (i64)"/proc/self/environ", O_RDONLY, 0, 0, 0);
+#endif
+  if(fd < 0) return;
+
+  bytes_read = (int)sys(SYS_read, fd, (i64)buffer, sizeof(buffer), 0, 0, 0);
+  sys(SYS_close, fd, 0, 0, 0, 0, 0);
+  if(bytes_read <= 0) return;
+
+  int pos = 0;
+  while(pos < bytes_read){
+      int start = pos;
+      while(pos < bytes_read && buffer[pos] != '\0') pos++;
+      if(pos > start){
+          parse_env_var(buffer + start, pos - start);
+        }
+      pos++; // skip NUL
+    }
+}
+
+// ============================================================================
 // Main server
 // ============================================================================
 void _start(void){
   // Load configuration first
   load_config("diggy.conf");
+  load_env_overrides();
 
   // Initialize route path lengths
   init_routes();
