@@ -9,10 +9,9 @@
 
 typedef struct {
   const char* path;
-  int path_len;  // Pre-calculated path length
   const char* content;
-  int content_len;
   const char* content_type;
+  int path_len;  // Will be calculated at runtime
   int content_type_len;  // Pre-calculated content type length
 } Route;
 
@@ -22,33 +21,46 @@ static const char about_content[] = "This is a simple HTTP server";
 static const char info_content[] = "Server v1.0.0\nMinimal HTTP implementation";
 
 // ============================================================================
+// Utility function to calculate string length
+// ============================================================================
+static int string_len(const char* str){
+  volatile int len = 0; // Use volatile to prevent optimization and use strlen from stdlib, which not available
+  while(str[len]) len++;
+  return len;
+}
+
+// ============================================================================
 // ROUTE TABLE - Add new routes here!
-// Pre-calculate all lengths
-// For content from lyrics.h, we use -1 to indicate runtime calculation
+// Path lengths will be calculated at initialization
 // ============================================================================
 static Route routes[] = {
-  {"/", 1, content, -1, "text/plain; charset=utf-8", 25},
-  {"/health", 7, health_content, 2, "text/plain", 10},
-  {"/about", 6, about_content, 29, "text/plain", 10},
-  {"/info", 5, info_content, 42, "text/plain", 10},
+  {"/",  content, "text/plain; charset=utf-8"},
+  {"/health", health_content,  "text/plain"},
+  {"/about",  about_content,  "text/plain"},
+  {"/info", info_content,  "text/plain"},
 };
 #define NUM_ROUTES (sizeof(routes) / sizeof(routes[0]))
 
+// ============================================================================
+// Initialize route path lengths
+// ============================================================================
+static void init_routes(void){
+  int i;
+  for(i = 0; i < NUM_ROUTES; i++){
+    routes[i].path_len = string_len(routes[i].path);
+    routes[i].content_type_len = string_len(routes[i].content_type);
+  }
+}
+
 // Build HTTP response for a route
-__attribute__((noinline))
 static int build_response(const Route* route, char* buf, int buf_size){
   static const char h1[] = "HTTP/1.1 200 OK\r\nContent-Length: ";
   static const char h2[] = "\r\nConnection: close\r\nContent-Type: ";
   static const char h3[] = "\r\n\r\n";
 
-  int content_len = route->content_len;
-
-  // If content_len is -1, calculate it at runtime
-  if(content_len < 0) {
-    content_len = 0;
-    const volatile char* p = (const volatile char*)route->content;
-    while(p[content_len]) content_len++;
-  }
+  int content_len = 0;
+  const volatile char* p = (const volatile char*)route->content;
+  while(p[content_len]) content_len++;
 
   char len_str[12];
   int len_digits = itoa(content_len, len_str);
@@ -83,7 +95,6 @@ static int build_response(const Route* route, char* buf, int buf_size){
 }
 
 // Build 404 response
-__attribute__((noinline))
 static int build_404_response(char* buf, int buf_size){
   static const char resp[] =
     "HTTP/1.1 404 Not Found\r\n"
@@ -100,7 +111,6 @@ static int build_404_response(char* buf, int buf_size){
 }
 
 // Extract path from HTTP request
-__attribute__((noinline))
 static int extract_path(const char* req, int req_len, const char** path_start, int* path_len){
   int i = 0;
 
@@ -121,7 +131,6 @@ static int extract_path(const char* req, int req_len, const char** path_start, i
 }
 
 // Compare two strings
-__attribute__((noinline))
 static int compare_strings(const char* s1, const char* s2, int len){
   int i;
   for(i = 0; i < len; i++){
@@ -131,7 +140,6 @@ static int compare_strings(const char* s1, const char* s2, int len){
 }
 
 // Find matching route
-__attribute__((noinline))
 static const Route* find_route(const char* path, int path_len){
   int i;
   for(i = 0; i < NUM_ROUTES; i++){
@@ -144,7 +152,6 @@ static const Route* find_route(const char* path, int path_len){
 }
 
 // Handle HTTP request
-__attribute__((noinline))
 static void handle_request(int client_fd){
   char req_buf[512];
   char resp_buf[MAX_RESPONSE_SIZE];
@@ -226,6 +233,9 @@ static void print_next_line(int* current_pos){
 // Main server
 // ============================================================================
 void _start(void){
+  // Initialize route path lengths
+  init_routes();
+
   // Print startup message
   static const char startup_msg[] = "starting diggy server on :8080\n";
   sys(SYS_write, 1, (i64)startup_msg, sizeof(startup_msg) - 1, 0, 0, 0);
