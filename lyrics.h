@@ -1,6 +1,7 @@
 #pragma once
 static const char content[] = "\n"
-"Wind Rose - Diggy Diggy Hole\n"
+"The Yogscast, Simon Lane, and Wind Rose Wind Rose\n"
+"Diggy Diggy Hole\n"
 "\n"
 "Brothers of the mine rejoice!\n"
 "(Swing, swing, swing with me!)\n"
