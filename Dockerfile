@@ -10,6 +10,7 @@ RUN cc -Os -s -static -nostdlib -fno-stack-protector -fno-asynchronous-unwind-ta
 
 FROM scratch
 COPY --from=build /src/app /app
+COPY diggy.conf .
 EXPOSE 8080
 USER 10001
 ENTRYPOINT ["/app"]

@@ -3,6 +3,193 @@
 #include "common.h"
 
 // ============================================================================
+// Add syscalls for file operations
+// ============================================================================
+#if defined(__x86_64__)
+#  define SYS_open 2
+#  define O_RDONLY 0
+#elif defined(__aarch64__)
+#  define SYS_openat 56
+#  define AT_FDCWD -100
+#  define O_RDONLY 0
+#endif
+
+// ============================================================================
+// Configuration structure
+// ============================================================================
+typedef struct {
+  int port;
+  u32 host;  // IP address in network byte order
+  int interval_ms;
+  int poll_timeout_ms;
+  int mine;
+} Config;
+
+// Default configuration
+static Config config = {
+  .port = 8080,
+  .host = 0,  // INADDR_ANY
+  .interval_ms = 2000,
+  .poll_timeout_ms = 100,
+  .mine = 1
+};
+
+// ============================================================================
+// String to integer conversion
+// ============================================================================
+static int str_to_int(const char* str, int len){
+  int result = 0;
+  int i;
+  for(i = 0; i < len; i++){
+    if(str[i] < '0' || str[i] > '9') break;
+    result = result * 10 + (str[i] - '0');
+  }
+  return result;
+}
+
+// ============================================================================
+// Parse IP address (e.g., "0.0.0.0" or "127.0.0.1")
+// ============================================================================
+static u32 parse_ip(const char* str, int len){
+  u32 result = 0;
+  int octet = 0;
+  int octet_count = 0;
+  int i;
+
+  for(i = 0; i <= len; i++){
+    if(i == len || str[i] == '.'){
+      if(octet_count >= 4) return 0;  // Too many octets
+      result |= (octet & 0xFF) << (8 * octet_count);
+      octet_count++;
+      octet = 0;
+    } else if(str[i] >= '0' && str[i] <= '9'){
+      octet = octet * 10 + (str[i] - '0');
+      if(octet > 255) return 0;  // Invalid octet
+    } else {
+      return 0;  // Invalid character
+    }
+  }
+
+  return (octet_count == 4) ? result : 0;
+}
+
+// ============================================================================
+// String comparison
+// ============================================================================
+static int str_equals(const char* s1, const char* s2, int len){
+  int i;
+  for(i = 0; i < len; i++){
+    if(s1[i] != s2[i]) return 0;
+  }
+  return 1;
+}
+
+// ============================================================================
+// Parse configuration line (key=value format)
+// ============================================================================
+static void parse_config_line(const char* line, int len){
+  // Find '=' separator
+  int eq_pos = -1;
+  int i;
+  for(i = 0; i < len; i++){
+    if(line[i] == '='){
+      eq_pos = i;
+      break;
+    }
+  }
+
+  if(eq_pos <= 0 || eq_pos >= len - 1) return;  // Invalid line
+
+  const char* key = line;
+  int key_len = eq_pos;
+  const char* value = line + eq_pos + 1;
+  int value_len = len - eq_pos - 1;
+
+  // Parse known configuration keys
+  if(key_len == 4 && str_equals(key, "port", 4)){
+    config.port = str_to_int(value, value_len);
+  } else if(key_len == 4 && str_equals(key, "host", 4)){
+    config.host = parse_ip(value, value_len);
+  } else if(key_len == 11 && str_equals(key, "interval_ms", 11)){
+    config.interval_ms = str_to_int(value, value_len);
+  } else if(key_len == 15 && str_equals(key, "poll_timeout_ms", 15)){
+    config.poll_timeout_ms = str_to_int(value, value_len);
+  } else if(key_len == 4 && str_equals(key, "mine", 4)){
+    config.mine = str_to_int(value, value_len);
+  }
+}
+
+// ============================================================================
+// Load configuration from file
+// ============================================================================
+static void load_config(const char* filename){
+  char buffer[1024];
+  int fd, bytes_read;
+
+  // Open file
+#if defined(__x86_64__)
+  fd = (int)sys(SYS_open, (i64)filename, O_RDONLY, 0, 0, 0, 0);
+#elif defined(__aarch64__)
+  fd = (int)sys(SYS_openat, AT_FDCWD, (i64)filename, O_RDONLY, 0, 0, 0);
+#endif
+
+  if(fd < 0){
+    // File not found or cannot open - use defaults
+    static const char msg[] = "Config file not found, using defaults\n";
+    sys(SYS_write, 1, (i64)msg, sizeof(msg) - 1, 0, 0, 0);
+    return;
+  }
+
+  // Read file content
+  bytes_read = (int)sys(SYS_read, fd, (i64)buffer, sizeof(buffer) - 1, 0, 0, 0);
+  sys(SYS_close, fd, 0, 0, 0, 0, 0);
+
+  if(bytes_read <= 0) return;
+
+  // Parse line by line
+  int line_start = 0;
+  int i;
+  for(i = 0; i <= bytes_read; i++){
+    if(i == bytes_read || buffer[i] == '\n'){
+      if(i > line_start){
+        parse_config_line(buffer + line_start, i - line_start);
+      }
+      line_start = i + 1;
+    }
+  }
+
+  // Print loaded configuration
+  static const char msg1[] = "Config file loaded:\n";
+  static const char msg2[] = "  port: ";
+  static const char msg3[] = "\n  interval_ms: ";
+  static const char msg4[] = "\n  poll_timeout_ms: ";
+  static const char msg5[] = "\n  mine: ";
+  static const char msg6[] = "\n";
+  char num_buf[12];
+  int num_len;
+
+  sys(SYS_write, 1, (i64)msg1, sizeof(msg1) - 1, 0, 0, 0);
+
+  sys(SYS_write, 1, (i64)msg2, sizeof(msg2) - 1, 0, 0, 0);
+  num_len = itoa(config.port, num_buf);
+  sys(SYS_write, 1, (i64)num_buf, num_len, 0, 0, 0);
+
+  sys(SYS_write, 1, (i64)msg3, sizeof(msg3) - 1, 0, 0, 0);
+  num_len = itoa(config.interval_ms, num_buf);
+  sys(SYS_write, 1, (i64)num_buf, num_len, 0, 0, 0);
+
+  sys(SYS_write, 1, (i64)msg4, sizeof(msg4) - 1, 0, 0, 0);
+  num_len = itoa(config.poll_timeout_ms, num_buf);
+  sys(SYS_write, 1, (i64)num_buf, num_len, 0, 0, 0);
+
+  sys(SYS_write, 1, (i64)msg5, sizeof(msg5) - 1, 0, 0, 0);
+  num_len = itoa(config.mine, num_buf);
+  sys(SYS_write, 1, (i64)num_buf, num_len, 0, 0, 0);
+
+  sys(SYS_write, 1, (i64)msg6, sizeof(msg6) - 1, 0, 0, 0);
+}
+
+// ============================================================================
 // Route handling system
 // ============================================================================
 #define MAX_RESPONSE_SIZE 8192
@@ -210,6 +397,9 @@ static int find_next_line(const char* str, int start, int total_len, int* line_s
 }
 
 static void print_next_line(int* current_pos){
+  // Only print if mining is enabled
+  if(!config.mine) return;
+
   // Calculate content length at runtime
   int content_len = 0;
   const volatile char* p = (const volatile char*)content;
@@ -234,23 +424,32 @@ static void print_next_line(int* current_pos){
 // Main server
 // ============================================================================
 void _start(void){
+  // Load configuration first
+  load_config("diggy.conf");
+
   // Initialize route path lengths
   init_routes();
 
-  // Print startup message
-  static const char startup_msg[] = "starting diggy server on :8080\n";
-  sys(SYS_write, 1, (i64)startup_msg, sizeof(startup_msg) - 1, 0, 0, 0);
+  // Print startup message with actual port
+  static const char startup_msg1[] = "starting diggy server on :";
+  char port_str[12];
+  int port_len = itoa(config.port, port_str);
+  static const char startup_msg2[] = "\n";
+
+  sys(SYS_write, 1, (i64)startup_msg1, sizeof(startup_msg1) - 1, 0, 0, 0);
+  sys(SYS_write, 1, (i64)port_str, port_len, 0, 0, 0);
+  sys(SYS_write, 1, (i64)startup_msg2, sizeof(startup_msg2) - 1, 0, 0, 0);
 
   // Create and configure socket
   int sock = (int)sys(SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
   int one = 1;
   sys(SYS_setsockopt, sock, SOL_SOCKET, SO_REUSEADDR, (i64)&one, sizeof(one), 0);
 
-  // Bind and listen
+  // Bind and listen using config values
   struct sockaddr_in addr = {0};
   addr.sin_family = AF_INET;
-  addr.sin_port = htons(8080);
-  addr.sin_addr.s_addr = 0;  // INADDR_ANY
+  addr.sin_port = htons(config.port);
+  addr.sin_addr.s_addr = config.host;  // Use configured host
 
   sys(SYS_bind, sock, (i64)&addr, sizeof(addr), 0, 0, 0);
   sys(SYS_listen, sock, 128, 0, 0, 0, 0);
@@ -258,8 +457,6 @@ void _start(void){
   // Line printing state
   int current_pos = 0;
   int elapsed_ms = 0;
-  const int interval_ms = 2000;  // 2 seconds
-  const int poll_timeout_ms = 100;  // Check every 100ms
 
   // Poll structure
   struct pollfd pfd;
@@ -268,13 +465,13 @@ void _start(void){
 
   // Main server loop
   for(;;){
-    // Poll with timeout
+    // Poll with configured timeout
     struct timespec ts;
-    ts.tv_sec = poll_timeout_ms / 1000;
-    ts.tv_nsec = (poll_timeout_ms % 1000) * 1000000;
+    ts.tv_sec = config.poll_timeout_ms / 1000;
+    ts.tv_nsec = (config.poll_timeout_ms % 1000) * 1000000;
 
 #if defined(__x86_64__)
-    int ready = (int)sys(SYS_poll, (i64)&pfd, 1, poll_timeout_ms, 0, 0, 0);
+    int ready = (int)sys(SYS_poll, (i64)&pfd, 1, config.poll_timeout_ms, 0, 0, 0);
 #elif defined(__aarch64__)
     int ready = (int)sys(SYS_ppoll, (i64)&pfd, 1, (i64)&ts, 0, 0, 0);
 #endif
@@ -288,8 +485,8 @@ void _start(void){
     }
 
     // Update timer and print lines
-    elapsed_ms += poll_timeout_ms;
-    if(elapsed_ms >= interval_ms){
+    elapsed_ms += config.poll_timeout_ms;
+    if(elapsed_ms >= config.interval_ms){
       elapsed_ms = 0;
       print_next_line(&current_pos);
     }
