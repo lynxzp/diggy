@@ -1,6 +1,6 @@
 #include "lyrics.h"
 #include "sys.h"
-#include "common.h"
+#include "notstdlib.h"
 
 // ============================================================================
 // Add syscalls for file operations
@@ -84,40 +84,8 @@ static int str_equals(const char* s1, const char* s2, int len){
   return 1;
 }
 
-// ============================================================================
-// Parse configuration line (key=value format)
-// ============================================================================
-static void parse_config_line(const char* line, int len){
-  // Find '=' separator
-  int eq_pos = -1;
-  int i;
-  for(i = 0; i < len; i++){
-    if(line[i] == '='){
-      eq_pos = i;
-      break;
-    }
-  }
 
-  if(eq_pos <= 0 || eq_pos >= len - 1) return;  // Invalid line
-
-  const char* key = line;
-  int key_len = eq_pos;
-  const char* value = line + eq_pos + 1;
-  int value_len = len - eq_pos - 1;
-
-  // Parse known configuration keys
-  if(key_len == 4 && str_equals(key, "port", 4)){
-    config.port = str_to_int(value, value_len);
-  } else if(key_len == 4 && str_equals(key, "host", 4)){
-    config.host = parse_ip(value, value_len);
-  } else if(key_len == 11 && str_equals(key, "interval_ms", 11)){
-    config.interval_ms = str_to_int(value, value_len);
-  } else if(key_len == 15 && str_equals(key, "poll_timeout_ms", 15)){
-    config.poll_timeout_ms = str_to_int(value, value_len);
-  } else if(key_len == 4 && str_equals(key, "mine", 4)){
-    config.mine = str_to_int(value, value_len);
-  }
-}
+static void parse_config_line(const char* line, int len);
 
 // ============================================================================
 // Load configuration from file
@@ -480,6 +448,110 @@ static void load_env_overrides(void){
     }
 }
 
+
+// ============================================================================
+// Parse configuration line (key=value format)
+// ============================================================================
+static int apply_config_kv(const char* key, int key_len, const char* value, int value_len){
+  if(key_len == 4 && str_equals(key, "port", 4)){
+    config.port = str_to_int(value, value_len);
+    return 1;
+  } else if(key_len == 4 && str_equals(key, "host", 4)){
+    u32 h = parse_ip(value, value_len);
+    if(h){ config.host = h; return 1; }
+  } else if(key_len == 11 && str_equals(key, "interval_ms", 11)){
+    config.interval_ms = str_to_int(value, value_len);
+    return 1;
+  } else if(key_len == 15 && str_equals(key, "poll_timeout_ms", 15)){
+    config.poll_timeout_ms = str_to_int(value, value_len);
+    return 1;
+  } else if(key_len == 4 && str_equals(key, "mine", 4)){
+    config.mine = str_to_int(value, value_len);
+    return 1;
+  }
+  return 0;
+}
+
+// ============================================================================
+// Parse configuration line (key=value format)
+// ============================================================================
+static void parse_config_line(const char* line, int len){
+  int eq_pos = -1;
+  int i;
+  for(i = 0; i < len; i++){
+    if(line[i] == '='){ eq_pos = i; break; }
+  }
+  if(eq_pos <= 0 || eq_pos >= len - 1) return;
+
+  const char* key = line;
+  int key_len = eq_pos;
+  const char* value = line + eq_pos + 1;
+  int value_len = len - eq_pos - 1;
+
+  (void)apply_config_kv(key, key_len, value, value_len);
+}
+
+// ============================================================================
+// CLI args: parse argv from initial stack
+// Supports: -port=, -host=, -interval_ms=, -poll_timeout_ms=, -mine=
+// ============================================================================
+
+static void load_cli_overrides(void){
+  char buf[2048];
+  int fd, n;
+
+#if defined(__x86_64__)
+  fd = (int)sys(SYS_open, (i64)"/proc/self/cmdline", O_RDONLY, 0, 0, 0, 0);
+#elif defined(__aarch64__)
+  fd = (int)sys(SYS_openat, AT_FDCWD, (i64)"/proc/self/cmdline", O_RDONLY, 0, 0, 0);
+#endif
+  if(fd < 0) return;
+
+  n = (int)sys(SYS_read, fd, (i64)buf, sizeof(buf), 0, 0, 0);
+  sys(SYS_close, fd, 0, 0, 0, 0, 0);
+  if(n <= 0) return;
+
+  int pos = 0;
+  int printed = 0;
+
+  // skip argv[0]
+  while(pos < n && buf[pos] != '\0') pos++;
+  if(pos < n) pos++;
+
+  while(pos < n){
+    int start = pos;
+    while(pos < n && buf[pos] != '\0') pos++;
+    int len = pos - start;
+    if(len > 0){
+      const char* a = buf + start;
+
+      // strip leading '-'s
+      int off = 0; while(off < len && a[off] == '-') off++;
+      const char* s = a + off;
+      int slen = len - off;
+
+      // find '='
+      int eq = -1;
+      for(int j = 0; j < slen; j++){
+        if(s[j] == '='){ eq = j; break; }
+      }
+      if(eq > 0 && eq < slen - 1){
+        if(apply_config_kv(s, eq, s + eq + 1, slen - eq - 1)){
+          if(!printed){
+            static const char hdr[] = "CLI overrides loaded:\n";
+            sys(SYS_write, 1, (i64)hdr, sizeof(hdr) - 1, 0, 0, 0);
+            printed = 1;
+          }
+          sys(SYS_write, 1, (i64)"  ", 2, 0, 0, 0);
+          sys(SYS_write, 1, (i64)s, slen, 0, 0, 0);
+          sys(SYS_write, 1, (i64)"\n", 1, 0, 0, 0);
+        }
+      }
+    }
+    pos++; // past NUL
+  }
+}
+
 // ============================================================================
 // Main server
 // ============================================================================
@@ -487,6 +559,7 @@ void _start(void){
   // Load configuration first
   load_config("diggy.conf");
   load_env_overrides();
+  load_cli_overrides();
 
   // Initialize route path lengths
   init_routes();
