@@ -33,11 +33,12 @@ static int string_len(const char* str){
 // ROUTE TABLE - Add new routes here!
 // Path lengths will be calculated at initialization
 // ============================================================================
+static const char content_type[] = "text/plain; charset=utf-8";
 static Route routes[] = {
-  {"/",  content, "text/plain; charset=utf-8"},
-  {"/health", health_content,  "text/plain"},
-  {"/about",  about_content,  "text/plain"},
-  {"/info", info_content,  "text/plain"},
+  {"/",  content, content_type},
+  {"/health", health_content,  content_type},
+  {"/about",  about_content,  content_type},
+  {"/info", info_content,  content_type},
 };
 #define NUM_ROUTES (sizeof(routes) / sizeof(routes[0]))
 
