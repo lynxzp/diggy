@@ -1,197 +1,263 @@
 #include "lyrics.h"
-// main.c — tiny HTTP router with line-by-line stdout printing
-// "/" returns content from lyrics.h
-// "/health" => 200, others => 404
-// Prints content line-by-line to stdout every 2 seconds
+#include "sys.h"
+#include "common.h"
 
-typedef long i64; typedef unsigned short u16; typedef unsigned int u32;
+// ============================================================================
+// Route handling system
+// ============================================================================
+#define MAX_RESPONSE_SIZE 8192
 
-#if defined(__x86_64__)
-static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
-  register i64 r10 __asm__("r10") = d;
-  register i64 r8  __asm__("r8")  = e;
-  register i64 r9  __asm__("r9")  = f;
-  i64 rax;
-  __asm__ volatile("syscall"
-    : "=a"(rax)
-    : "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9)
-    : "rcx","r11","memory");
-  return rax;
-}
-#  define SYS_read 0
-#  define SYS_write 1
-#  define SYS_close 3
-#  define SYS_poll 7
-#  define SYS_socket 41
-#  define SYS_bind 49
-#  define SYS_listen 50
-#  define SYS_accept 43
-#  define SYS_setsockopt 54
-#  define SYS_exit 60
-#elif defined(__aarch64__)
-static inline i64 sys(i64 n,i64 a,i64 b,i64 c,i64 d,i64 e,i64 f){
-  register i64 x8 __asm__("x8") = n;
-  register i64 x0 __asm__("x0") = a;
-  register i64 x1 __asm__("x1") = b;
-  register i64 x2 __asm__("x2") = c;
-  register i64 x3 __asm__("x3") = d;
-  register i64 x4 __asm__("x4") = e;
-  register i64 x5 __asm__("x5") = f;
-  __asm__ volatile("svc 0" : "+r"(x0)
-                   : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
-                   : "memory");
-  return x0;
-}
-#  define SYS_close 57
-#  define SYS_read 63
-#  define SYS_write 64
-#  define SYS_ppoll 73
-#  define SYS_socket 198
-#  define SYS_bind 200
-#  define SYS_listen 201
-#  define SYS_accept 202
-#  define SYS_setsockopt 208
-#  define SYS_exit 93
-#else
-#  error "Unsupported arch"
-#endif
+typedef struct {
+  const char* path;
+  int path_len;  // Pre-calculated path length
+  const char* content;
+  int content_len;
+  const char* content_type;
+  int content_type_len;  // Pre-calculated content type length
+} Route;
 
-#define AF_INET 2
-#define SOCK_STREAM 1
-#define SOL_SOCKET 1
-#define SO_REUSEADDR 2
-#define POLLIN 0x001
+// Example static content (add more as needed)
+static const char health_content[] = "OK";
+static const char about_content[] = "This is a simple HTTP server";
+static const char info_content[] = "Server v1.0.0\nMinimal HTTP implementation";
 
-struct pollfd {
-  int fd;
-  short events;
-  short revents;
+// ============================================================================
+// ROUTE TABLE - Add new routes here!
+// Pre-calculate all lengths
+// For content from lyrics.h, we use -1 to indicate runtime calculation
+// ============================================================================
+static Route routes[] = {
+  {"/", 1, content, -1, "text/plain; charset=utf-8", 25},
+  {"/health", 7, health_content, 2, "text/plain", 10},
+  {"/about", 6, about_content, 29, "text/plain", 10},
+  {"/info", 5, info_content, 42, "text/plain", 10},
 };
+#define NUM_ROUTES (sizeof(routes) / sizeof(routes[0]))
 
-struct timespec {
-  i64 tv_sec;
-  i64 tv_nsec;
-};
+// Build HTTP response for a route
+__attribute__((noinline))
+static int build_response(const Route* route, char* buf, int buf_size){
+  static const char h1[] = "HTTP/1.1 200 OK\r\nContent-Length: ";
+  static const char h2[] = "\r\nConnection: close\r\nContent-Type: ";
+  static const char h3[] = "\r\n\r\n";
 
-struct in_addr{ u32 s_addr; };
-struct sockaddr_in{
-  u16 sin_family; u16 sin_port; struct in_addr sin_addr; unsigned char sin_zero[8];
-};
-static u16 htons(u16 x){ return (u16)((x<<8)|(x>>8)); }
+  int content_len = route->content_len;
 
-// Simple int to string conversion
-static int itoa(int val, char* buf){
-  int i = 0, j, tmp;
-  char rev[12];
-  if(val == 0){ buf[0] = '0'; return 1; }
-  while(val > 0){
-    rev[i++] = '0' + (val % 10);
-    val /= 10;
+  // If content_len is -1, calculate it at runtime
+  if(content_len < 0) {
+    content_len = 0;
+    const volatile char* p = (const volatile char*)route->content;
+    while(p[content_len]) content_len++;
   }
-  for(j = 0; j < i; j++) buf[j] = rev[i-j-1];
-  return i;
+
+  char len_str[12];
+  int len_digits = itoa(content_len, len_str);
+
+  int pos = 0;
+
+  // Check buffer size
+  int needed = (sizeof(h1) - 1) + len_digits + (sizeof(h2) - 1) +
+               route->content_type_len + (sizeof(h3) - 1) + content_len;
+  if(needed > buf_size) return -1;
+
+  // Build response
+  memcpy_manual(buf + pos, h1, sizeof(h1) - 1);
+  pos += sizeof(h1) - 1;
+
+  memcpy_manual(buf + pos, len_str, len_digits);
+  pos += len_digits;
+
+  memcpy_manual(buf + pos, h2, sizeof(h2) - 1);
+  pos += sizeof(h2) - 1;
+
+  memcpy_manual(buf + pos, route->content_type, route->content_type_len);
+  pos += route->content_type_len;
+
+  memcpy_manual(buf + pos, h3, sizeof(h3) - 1);
+  pos += sizeof(h3) - 1;
+
+  memcpy_manual(buf + pos, route->content, content_len);
+  pos += content_len;
+
+  return pos;
 }
 
-static int path_case(const char *buf, int n){
-  // returns: 0="/", 1="/health", 2=other/unknown
-  int i=0;
-  // skip method token
-  while(i<n && buf[i]!=' ') i++;
-  while(i<n && buf[i]==' ') i++;
-  if(i>=n || buf[i]!='/') return 2;
-  int start=i;
-  while(i<n && buf[i]!=' ') i++;
-  int len=i-start;
-  if(len==1) return 0; // "/"
-  if(len==7){
-    const char h[]="/health";
-    for(int k=0;k<7;k++) if(start+k>=n || buf[start+k]!=h[k]) return 2;
-    return 1;
-  }
-  return 2;
-}
-
-// Prevent compiler from optimizing to memcpy
-static void* memcpy_manual(void* dst, const void* src, int n){
-  char* d = (char*)dst;
-  const char* s = (const char*)src;
-  while(n--) *d++ = *s++;
-  return dst;
-}
-
-// Find next line in content
-static int find_next_line(const char* str, int start, int total_len, int* line_start, int* line_len){
-  if(start >= total_len) return 0; // No more lines
-
-  *line_start = start;
-  int i = start;
-  while(i < total_len && str[i] != '\n') i++;
-
-  *line_len = i - start;
-  return 1; // Found a line
-}
-
-void _start(void){
-  // Print startup message
-  static const char startup_msg[] = "starting diggy server on :8080\n";
-  sys(SYS_write, 1, (i64)startup_msg, sizeof(startup_msg) - 1, 0, 0, 0);
-
-  int s=(int)sys(SYS_socket,AF_INET,SOCK_STREAM,0,0,0,0);
-  int one=1; sys(SYS_setsockopt,s,SOL_SOCKET,SO_REUSEADDR,(i64)&one,sizeof(one),0);
-
-  struct sockaddr_in a = {0};
-  a.sin_family=AF_INET; a.sin_port=htons(8080); a.sin_addr.s_addr=0;
-  sys(SYS_bind,s,(i64)&a,sizeof(a),0,0,0);
-  sys(SYS_listen,s,128,0,0,0,0);
-
-  static const char resp_health[] =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Length: 2\r\n"
-    "Connection: close\r\n"
-    "Content-Type: text/plain\r\n"
-    "\r\nOK";
-
-  static const char resp_404[] =
+// Build 404 response
+__attribute__((noinline))
+static int build_404_response(char* buf, int buf_size){
+  static const char resp[] =
     "HTTP/1.1 404 Not Found\r\n"
     "Content-Length: 9\r\n"
     "Connection: close\r\n"
     "Content-Type: text/plain\r\n"
     "\r\nNot Found";
 
-  // Static allocation for complete response
-  static const char h1[] = "HTTP/1.1 200 OK\r\nContent-Length: ";
-  static const char h2[] = "\r\nConnection: close\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n";
+  int len = sizeof(resp) - 1;
+  if(len > buf_size) return -1;
 
-  // Use static buffer large enough for response
-  static char resp_main[1024];
-  char len_str[12];
-  int content_len = sizeof(content) - 1;
-  int len_digits = itoa(content_len, len_str);
+  memcpy_manual(buf, resp, len);
+  return len;
+}
 
-  int pos = 0;
-  // Copy headers
-  memcpy_manual(resp_main + pos, h1, sizeof(h1) - 1);
-  pos += sizeof(h1) - 1;
-  memcpy_manual(resp_main + pos, len_str, len_digits);
-  pos += len_digits;
-  memcpy_manual(resp_main + pos, h2, sizeof(h2) - 1);
-  pos += sizeof(h2) - 1;
-  memcpy_manual(resp_main + pos, content, content_len);
-  pos += content_len;
+// Extract path from HTTP request
+__attribute__((noinline))
+static int extract_path(const char* req, int req_len, const char** path_start, int* path_len){
+  int i = 0;
+
+  // Skip method
+  while(i < req_len && req[i] != ' ') i++;
+  while(i < req_len && req[i] == ' ') i++;
+
+  if(i >= req_len || req[i] != '/') return 0;
+
+  *path_start = &req[i];
+  int start = i;
+
+  // Find end of path
+  while(i < req_len && req[i] != ' ' && req[i] != '?') i++;
+
+  *path_len = i - start;
+  return 1;
+}
+
+// Compare two strings
+__attribute__((noinline))
+static int compare_strings(const char* s1, const char* s2, int len){
+  int i;
+  for(i = 0; i < len; i++){
+    if(s1[i] != s2[i]) return 0;
+  }
+  return 1;
+}
+
+// Find matching route
+__attribute__((noinline))
+static const Route* find_route(const char* path, int path_len){
+  int i;
+  for(i = 0; i < NUM_ROUTES; i++){
+    if(routes[i].path_len == path_len &&
+       compare_strings(routes[i].path, path, path_len)){
+      return &routes[i];
+    }
+  }
+  return 0;  // Not found
+}
+
+// Handle HTTP request
+__attribute__((noinline))
+static void handle_request(int client_fd){
+  char req_buf[512];
+  char resp_buf[MAX_RESPONSE_SIZE];
+
+  // Read request
+  int req_len = (int)sys(SYS_read, client_fd, (i64)req_buf, sizeof(req_buf), 0, 0, 0);
+  if(req_len <= 0){
+    sys(SYS_close, client_fd, 0, 0, 0, 0, 0);
+    return;
+  }
+
+  // Extract path
+  const char* path;
+  int path_len;
+  if(!extract_path(req_buf, req_len, &path, &path_len)){
+    // Invalid request, send 404
+    int resp_len = build_404_response(resp_buf, sizeof(resp_buf));
+    if(resp_len > 0){
+      sys(SYS_write, client_fd, (i64)resp_buf, resp_len, 0, 0, 0);
+    }
+    sys(SYS_close, client_fd, 0, 0, 0, 0, 0);
+    return;
+  }
+
+  // Find route
+  const Route* route = find_route(path, path_len);
+  int resp_len;
+
+  if(route){
+    resp_len = build_response(route, resp_buf, sizeof(resp_buf));
+  } else {
+    resp_len = build_404_response(resp_buf, sizeof(resp_buf));
+  }
+
+  // Send response
+  if(resp_len > 0){
+    sys(SYS_write, client_fd, (i64)resp_buf, resp_len, 0, 0, 0);
+  }
+
+  sys(SYS_close, client_fd, 0, 0, 0, 0, 0);
+}
+
+// ============================================================================
+// Line printing functionality
+// ============================================================================
+static int find_next_line(const char* str, int start, int total_len, int* line_start, int* line_len){
+  if(start >= total_len) return 0;
+
+  *line_start = start;
+  int i = start;
+  while(i < total_len && str[i] != '\n') i++;
+
+  *line_len = i - start;
+  return 1;
+}
+
+static void print_next_line(int* current_pos){
+  // Calculate content length at runtime
+  int content_len = 0;
+  const volatile char* p = (const volatile char*)content;
+  while(p[content_len]) content_len++;
+
+  int line_start, line_len;
+
+  if(find_next_line(content, *current_pos, content_len, &line_start, &line_len)){
+    sys(SYS_write, 1, (i64)(content + line_start), line_len, 0, 0, 0);
+    sys(SYS_write, 1, (i64)"\n", 1, 0, 0, 0);
+
+    *current_pos = line_start + line_len;
+    if(*current_pos < content_len && content[*current_pos] == '\n'){
+      (*current_pos)++;
+    }
+  } else {
+    *current_pos = 0;  // Start over
+  }
+}
+
+// ============================================================================
+// Main server
+// ============================================================================
+void _start(void){
+  // Print startup message
+  static const char startup_msg[] = "starting diggy server on :8080\n";
+  sys(SYS_write, 1, (i64)startup_msg, sizeof(startup_msg) - 1, 0, 0, 0);
+
+  // Create and configure socket
+  int sock = (int)sys(SYS_socket, AF_INET, SOCK_STREAM, 0, 0, 0, 0);
+  int one = 1;
+  sys(SYS_setsockopt, sock, SOL_SOCKET, SO_REUSEADDR, (i64)&one, sizeof(one), 0);
+
+  // Bind and listen
+  struct sockaddr_in addr = {0};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(8080);
+  addr.sin_addr.s_addr = 0;  // INADDR_ANY
+
+  sys(SYS_bind, sock, (i64)&addr, sizeof(addr), 0, 0, 0);
+  sys(SYS_listen, sock, 128, 0, 0, 0, 0);
 
   // Line printing state
   int current_pos = 0;
   int elapsed_ms = 0;
-  const int interval_ms = 2000; // 2 seconds
-  const int poll_timeout_ms = 100; // Check every 100ms
+  const int interval_ms = 2000;  // 2 seconds
+  const int poll_timeout_ms = 100;  // Check every 100ms
 
-  // Poll structure for the listening socket
+  // Poll structure
   struct pollfd pfd;
-  pfd.fd = s;
+  pfd.fd = sock;
   pfd.events = POLLIN;
 
+  // Main server loop
   for(;;){
-    // Poll with timeout (non-blocking)
+    // Poll with timeout
     struct timespec ts;
     ts.tv_sec = poll_timeout_ms / 1000;
     ts.tv_nsec = (poll_timeout_ms % 1000) * 1000000;
@@ -202,51 +268,19 @@ void _start(void){
     int ready = (int)sys(SYS_ppoll, (i64)&pfd, 1, (i64)&ts, 0, 0, 0);
 #endif
 
-    // Handle HTTP connections if available
+    // Handle incoming connections
     if(ready > 0 && (pfd.revents & POLLIN)){
-      int c=(int)sys(SYS_accept,s,0,0,0,0,0);
-      if(c >= 0){
-        char buf[512];
-        int n=(int)sys(SYS_read,c,(i64)buf,(i64)sizeof(buf),0,0,0);
-        int which = (n>0) ? path_case(buf,n) : 2;
-
-        if(which==0){
-          // Main page with content
-          sys(SYS_write,c,(i64)resp_main,(i64)pos,0,0,0);
-        }else if(which==1){
-          // Health check
-          sys(SYS_write,c,(i64)resp_health,(i64)(sizeof(resp_health)-1),0,0,0);
-        }else{
-          // 404
-          sys(SYS_write,c,(i64)resp_404,(i64)(sizeof(resp_404)-1),0,0,0);
-        }
-
-        sys(SYS_close,c,0,0,0,0,0);
+      int client = (int)sys(SYS_accept, sock, 0, 0, 0, 0, 0);
+      if(client >= 0){
+        handle_request(client);
       }
     }
 
-    // Update elapsed time
+    // Update timer and print lines
     elapsed_ms += poll_timeout_ms;
-
-    // Print line every 2 seconds
     if(elapsed_ms >= interval_ms){
       elapsed_ms = 0;
-
-      int line_start, line_len;
-      if(find_next_line(content, current_pos, content_len, &line_start, &line_len)){
-        // Write line to stdout (fd=1)
-        sys(SYS_write, 1, (i64)(content + line_start), line_len, 0, 0, 0);
-        sys(SYS_write, 1, (i64)"\n", 1, 0, 0, 0);
-
-        // Move to next line
-        current_pos = line_start + line_len;
-        if(current_pos < content_len && content[current_pos] == '\n'){
-          current_pos++; // Skip the newline character
-        }
-      } else {
-        // Reached end, start over
-        current_pos = 0;
-      }
+      print_next_line(&current_pos);
     }
   }
 }
