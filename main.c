@@ -132,6 +132,10 @@ static int find_next_line(const char* str, int start, int total_len, int* line_s
 }
 
 void _start(void){
+  // Print startup message
+  static const char startup_msg[] = "starting diggy server on :8080\n";
+  sys(SYS_write, 1, (i64)startup_msg, sizeof(startup_msg) - 1, 0, 0, 0);
+
   int s=(int)sys(SYS_socket,AF_INET,SOCK_STREAM,0,0,0,0);
   int one=1; sys(SYS_setsockopt,s,SOL_SOCKET,SO_REUSEADDR,(i64)&one,sizeof(one),0);
 
@@ -245,7 +249,4 @@ void _start(void){
       }
     }
   }
-
-  sys(SYS_close,s,0,0,0,0,0);
-  sys(SYS_exit,0,0,0,0,0,0);
 }
