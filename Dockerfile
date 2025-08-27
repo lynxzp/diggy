@@ -14,6 +14,15 @@ COPY diggy.conf .
 EXPOSE 8080
 USER 10001
 
+# Image size and metadata labels
+LABEL image.size="small" \
+      image.size.description="Minimalistic HTTP server with Docker image size less than 100kB" \
+      image.size.target="<100kB" \
+      org.opencontainers.image.title="Diggy HTTP Server" \
+      org.opencontainers.image.description="Extremely minimalistic, static-route HTTP server with simple config via file, env, or CLI. Docker image size less than 100kB." \
+      org.opencontainers.image.vendor="lynxzp" \
+      org.opencontainers.image.source="https://github.com/lynxzp/diggy"
+
 ENV DIGGY_PORT=8080
 ENV DIGGY_HOST=0.0.0.0
 ENV DIGGY_INTERVAL_MS=1800

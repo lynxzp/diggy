@@ -11,6 +11,19 @@ docker build -t diggy .
 docker run --rm -p 8080:8080 diggy
 ```
 
+### Image Labels
+
+The Docker image includes metadata labels for size information:
+- `image.size`: "small" 
+- `image.size.description`: Description of the minimalistic nature
+- `image.size.target`: "<100kB" target size
+- Standard OCI labels for title, description, vendor, and source
+
+To inspect the image labels after building:
+```bash
+./inspect_labels.sh diggy
+```
+
 ## Binary Usage
 
 ```bash
