@@ -4,7 +4,6 @@
 [![Docker Image Size](https://img.shields.io/docker/image-size/ghcr.io/lynxzp/diggy/latest?label=image%20size)](https://github.com/lynxzp/diggy/pkgs/container/diggy)
 
 Extremely minimalistic, static-route HTTP server with simple config via file, env, or CLI.  
-Docker image size less than 100kB.
 
 ## Quick Start
 

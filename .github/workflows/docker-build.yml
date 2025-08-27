@@ -58,11 +58,10 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Get image size
-      if: github.event_name != 'pull_request'
       run: |
         # Pull the image and get its size
         docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
         IMAGE_SIZE=$(docker image inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest --format='{{.Size}}')
-        IMAGE_SIZE_MB=$(echo "scale=2; $IMAGE_SIZE / 1024 / 1024" | bc -l)
-        echo "IMAGE_SIZE_MB=$IMAGE_SIZE_MB" >> $GITHUB_ENV
-        echo "Image size: ${IMAGE_SIZE_MB}MB"
+        IMAGE_SIZE_KB=$(echo "scale=2; $IMAGE_SIZE / 1024" | bc -l)
+        echo "IMAGE_SIZE_KB=$IMAGE_SIZE_KB" >> $GITHUB_ENV
+        echo "Image size: ${IMAGE_SIZE_KB}KB"
