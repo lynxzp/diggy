@@ -58,6 +58,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Get image size
+      if: github.event_name != 'pull_request'
       run: |
         # Pull the image and get its size
         docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
