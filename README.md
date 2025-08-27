@@ -1,12 +1,17 @@
 # Diggy HTTP Server
 
+[![Docker Build](https://github.com/lynxzp/diggy/actions/workflows/docker-build.yml/badge.svg)](https://github.com/lynxzp/diggy/actions/workflows/docker-build.yml)
+[![Docker Image Size](https://img.shields.io/docker/image-size/lynxzp/diggy)](https://github.com/lynxzp/diggy/pkgs/container/diggy)
+
 Extremely minimalistic, static-route HTTP server with simple config via file, env, or CLI.  
-Docker image size less than 100kB.
 
 ## Quick Start
 
 ```bash
-# Build & run with the provided Dockerfile
+# Run from GitHub Container Registry
+docker run --rm -p 8080:8080 ghcr.io/lynxzp/diggy:latest
+
+# Or build & run locally with the provided Dockerfile
 docker build -t diggy .
 docker run --rm -p 8080:8080 diggy
 ```
